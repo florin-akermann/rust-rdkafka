@@ -887,3 +887,80 @@ async fn test_consumer_rebalance_callbacks() {
     );
     assert_eq!(assign2.partitions[0].0, topic_name);
 }
+
+#[tokio::test]
+async fn test_partition_eof_error_details() {
+    init_test_logger();
+    let kafka_context = KafkaContext::shared()
+        .await
+        .expect("could not create kafka context");
+    let topic_name = rand_test_topic("test_partition_eof_error_details");
+    let message_count = 5usize;
+
+    let admin_client = admin::create_admin_client(&kafka_context.bootstrap_servers)
+        .await
+        .expect("could not create admin client");
+    admin_client
+        .create_topics(
+            &admin::new_topic_vec(&topic_name, Some(1)),
+            &AdminOptions::default(),
+        )
+        .await
+        .expect("could not create topic");
+
+    let producer = producer::future_producer::create_producer(&kafka_context.bootstrap_servers)
+        .await
+        .expect("could not create producer");
+    produce_messages_to_partition(&producer, &topic_name, message_count, 0).await;
+
+    let consumer = utils::consumer::create_base_consumer(
+        &kafka_context.bootstrap_servers,
+        &rand_test_group(),
+        Some(&[("enable.partition.eof", "true")]),
+    )
+    .expect("could not create base consumer");
+
+    let mut tpl = TopicPartitionList::new();
+    tpl.add_partition_offset(&topic_name, 0, Offset::Beginning)
+        .unwrap();
+    consumer.assign(&tpl).unwrap();
+
+    let is_transient = |e: &KafkaError| {
+        matches!(
+            e,
+            KafkaError::MessageConsumption(
+                RDKafkaErrorCode::BrokerTransportFailure | RDKafkaErrorCode::AllBrokersDown
+            )
+        )
+    };
+
+    let mut received = 0;
+    while received < message_count {
+        match consumer.poll(Timeout::from(Duration::from_secs(5))) {
+            Some(Ok(message)) => {
+                assert_eq!(message.offset(), received as i64);
+                assert_eq!(message.partition(), 0);
+                assert_eq!(message.topic(), topic_name);
+                received += 1;
+            }
+            Some(Err(ref e)) if is_transient(e) => {}
+            Some(Err(e)) => panic!("Error receiving message: {:?}", e),
+            None => panic!("No message received within timeout"),
+        }
+    }
+
+    loop {
+        match consumer.poll(Timeout::from(Duration::from_secs(5))) {
+            Some(Err(KafkaError::PartitionEOF(tpo))) => {
+                assert_eq!(tpo.topic, topic_name);
+                assert_eq!(tpo.partition, 0);
+                assert_eq!(tpo.offset, message_count as i64);
+                break;
+            }
+            Some(Err(ref e)) if is_transient(e) => {}
+            Some(Ok(_)) => panic!("Expected PartitionEOF error, got message"),
+            Some(Err(e)) => panic!("Expected PartitionEOF error, got: {:?}", e),
+            None => panic!("No message or error received within timeout"),
+        }
+    }
+}
