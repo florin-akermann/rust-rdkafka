@@ -31,6 +31,30 @@ pub fn get_rdkafka_version() -> (i32, String) {
     (version_number, c_str.to_string_lossy().into_owned())
 }
 
+
+/// Represents the coordinates of a kafka record
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct TopicPartitionOffset{
+    /// The name of the Kafka topic.
+    pub topic: String,
+    /// The partition within the Kafka topic.
+    pub partition: i32,
+    /// The offset within the specified Kafka partition.
+    pub offset: i64,
+}
+
+
+impl fmt::Display for TopicPartitionOffset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Topic: {}, Partition: {}, Offset: {}",
+            self.topic, self.partition, self.offset
+        )
+    }
+}
+
+
 /// Specifies a timeout for a Kafka operation.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Timeout {
